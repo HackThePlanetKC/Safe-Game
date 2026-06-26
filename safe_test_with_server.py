@@ -146,14 +146,60 @@ def tone(freq, duration_ms):
         buzzer.value(0)
         utime.sleep(delay)
 
+# --- Updated Encoder Interrupt Handler with Audio Ticks ---
 def read_encoder(pin):
-    global last_state_a, encoder_value, current_dial_number
+    global last_state_a, encoder_value, current_dial_number, last_dial_number
     if game_mode != 1: return 
+    
     c_state_a = pin_a.value()
     if c_state_a != last_state_a:
-        if pin_b.value() != c_state_a: encoder_value += 1
-        else: encoder_value -= 1
-        current_dial_number = abs(encoder_value) % (dial_max + 1)
+        last_dial_number = current_dial_number
+        
+        if pin_b.value() != c_state_a: 
+            step = 1   # CW
+        else: 
+            step = -1  # CCW
+            
+        target_number = (current_dial_number + step)
+        if target_number > dial_max: target_number = 0
+        elif target_number < 0: target_number = dial_max
+        
+        required_step = -1 if current_stage == 1 else 1
+        
+        if step != required_step:
+            if selected_diff == "EASY":
+                current_dial_number = target_number
+                # Sharp, tiny tick for moving backwards on Easy
+                buzzer.value(1)
+                utime.sleep_us(150)
+                buzzer.value(0)
+            elif selected_diff == "MED":
+                # Frozen! Give a heavy, dull "thud" to signal it's stuck
+                buzzer.value(1)
+                utime.sleep_us(800)
+                buzzer.value(0)
+            elif selected_diff == "HARD":
+                current_dial_number = -99 
+        else:
+            # Moving the right way! 
+            current_dial_number = target_number
+            
+            # Check if this new number is the exact target for the current stage
+            if current_dial_number == secret_combo[current_stage]:
+                # 1. AUDIO SNAP: A slightly longer pulse creates a deeper, louder click
+                buzzer.value(1)
+                utime.sleep_us(400)  # Standard is 150, 400 sounds meatier
+                buzzer.value(0)
+                
+                # 2. HAPTIC STICKY: A tiny 12ms pause tricks the user's brain 
+                # into feeling physical resistance/drag on this specific click
+                utime.sleep_ms(12)
+            else:
+                # Regular crisp micro-tick
+                buzzer.value(1)
+                utime.sleep_us(150)
+                buzzer.value(0)
+
         last_state_a = c_state_a
 
 pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=read_encoder)
@@ -255,22 +301,30 @@ async def game_loop():
                 game_mode = 1 
                 
         elif game_mode == 1:
+            # CRITICAL: Handle Hard Mode Wrong-Way Reset
+            if current_dial_number == -99:
+                tone(150, 500) # Long, sad buzz
+                
+                # Reset stage and positions back to the beginning
+                current_stage = 0
+                encoder_value = 0
+                current_dial_number = 0
+                stage_locked_values = ["--", "--", "--"]
+                gauge_current_width = 0.0
+                gauge_velocity = 0.0
+                
+                # NOTE: secret_combo and game_start_time are left untouched 
+                # so the code keeps the same targets and the timer running!
+                continue
+
             update_game_displays()
             update_tumbler_sensor()
             
-            if pin_sw.value() == 0:
-                utime.sleep_ms(50)
-                if pin_sw.value() == 0:
-                    if current_dial_number == secret_combo[current_stage]:
-                        tone(1200, 100)
-                        stage_locked_values[current_stage] = current_dial_number
-                        current_stage += 1
-                        encoder_value, current_dial_number = 0, 0
-                        gauge_current_width, gauge_velocity = 0.0, 0.0
-                        if current_stage >= 3: game_mode = 2
-                    else:
-                        tone(220, 400)
-                    while pin_sw.value() == 0: await asyncio.sleep_ms(10)
+            # --- Directional Instruction Graphics ---
+            if current_stage == 1:
+                disp_gauge.text("<- SPIN CCW", 8, 24)
+            else:
+                disp_gauge.text("SPIN CW ->", 48, 24)
 
         elif game_mode == 2:
             update_game_displays()

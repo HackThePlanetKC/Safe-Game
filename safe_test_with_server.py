@@ -23,9 +23,13 @@ disp_gauge  = ssd1306.SSD1306_I2C(128, 32, i2c1, addr=0x3D)
 
 servo = PWM(Pin(15))
 servo.freq(50)
-buzzer = Pin(14, Pin.OUT)
 
-# Rotary Encoder (PEC11R-4015F-S0024)
+# Audio & Stethoscope Detection Pins
+buzzer = Pin(14, Pin.OUT)
+hp_audio = Pin(13, Pin.OUT)
+hp_detect = Pin(12, Pin.IN, Pin.PULL_UP)
+
+# Rotary Encoder (PEC11R-4220K-S0024)
 pin_a = Pin(16, Pin.IN, Pin.PULL_UP)
 pin_b = Pin(17, Pin.IN, Pin.PULL_UP)
 pin_sw = Pin(18, Pin.IN, Pin.PULL_UP)
@@ -57,7 +61,7 @@ last_dial_number = 0
 # --- Timer, Inactivity Watchdog, & Leaderboard ---
 game_start_time = 0
 last_activity_time = 0
-IDLE_TIMEOUT_MS = 60000  # 60 seconds to reset abandoned games
+IDLE_TIMEOUT_MS = 60000  
 current_player_nfc = "GUEST"
 ip_address = "0.0.0.0"
 leaderboard_data = []
@@ -125,14 +129,25 @@ def set_servo_angle(angle):
     servo.duty_u16(duty)
 
 def tone(freq, duration_ms):
+    """Generates an audio tone, automatically switching targets if headphones are inserted."""
+    # If detection pin reads 1, headphones are present
+    active_output = hp_audio if hp_detect.value() == 1 else buzzer
+    
     period = 1.0 / freq
     delay = period / 2.0
     cycles = int(freq * (duration_ms / 1000.0))
     for _ in range(cycles):
-        buzzer.value(1)
+        active_output.value(1)
         utime.sleep(delay)
-        buzzer.value(0)
+        active_output.value(0)
         utime.sleep(delay)
+
+def fast_click(us_duration):
+    """Generates low-latency microsecond clicks for dial turning feedback."""
+    active_output = hp_audio if hp_detect.value() == 1 else buzzer
+    active_output.value(1)
+    utime.sleep_us(us_duration)
+    active_output.value(0)
 
 # --- Hardware ISR Encoder Function ---
 def read_encoder(pin):
@@ -150,14 +165,11 @@ def read_encoder(pin):
             menu_index += step
             if menu_index > 2: menu_index = 0
             elif menu_index < 0: menu_index = 2
-            
-            buzzer.value(1)
-            utime.sleep_us(150)
-            buzzer.value(0)
+            fast_click(150)
             
         # --- MODE 1: ACTIVE CRACKING ENGINE ---
         elif game_mode == 1:
-            last_activity_time = utime.ticks_ms()  # Register activity
+            last_activity_time = utime.ticks_ms()  
             last_dial_number = current_dial_number
             target_number = (current_dial_number + step)
             
@@ -169,27 +181,18 @@ def read_encoder(pin):
             if step != required_step:
                 if selected_diff == "EASY":
                     current_dial_number = target_number
-                    buzzer.value(1)
-                    utime.sleep_us(150)
-                    buzzer.value(0)
+                    fast_click(150)
                 elif selected_diff == "MED":
-                    buzzer.value(1)
-                    utime.sleep_us(800) # Heavy friction thud
-                    buzzer.value(0)
+                    fast_click(800) # Heavy friction thud
                 elif selected_diff == "HARD":
                     current_dial_number = -99 # Flag reset for main loop
             else:
                 current_dial_number = target_number
-                
                 if current_dial_number == secret_combo[current_stage]:
-                    buzzer.value(1)
-                    utime.sleep_us(400) # Heavy lock snap
-                    buzzer.value(0)
+                    fast_click(400) # Heavy lock snap
                     utime.sleep_ms(12)  # Haptic sticky drag pause
                 else:
-                    buzzer.value(1)
-                    utime.sleep_us(150) # Light crisp click
-                    buzzer.value(0)
+                    fast_click(150) # Light crisp click
 
         last_state_a = c_state_a
 
@@ -297,15 +300,12 @@ async def game_loop():
                 tone(600, 100)
                 tone(400, 100)
                 tone(200, 250)
-                current_stage, encoder_value, current_dial_number = 0, 0, 0
-                stage_locked_values = ["--", "--", "--"]
-                gauge_current_width, gauge_velocity = 0.0, 0.0
                 game_mode = 0
                 continue
 
             # --- HARD MODE INTERRUPT: Wrong-Way Reset ---
             if current_dial_number == -99:
-                last_activity_time = utime.ticks_ms()  # Register reset as activity
+                last_activity_time = utime.ticks_ms()  
                 tone(150, 500) 
                 current_stage = 0
                 encoder_value = 0
@@ -324,7 +324,7 @@ async def game_loop():
             if pin_sw.value() == 0:
                 utime.sleep_ms(50)
                 if pin_sw.value() == 0:
-                    last_activity_time = utime.ticks_ms()  # Register button interaction
+                    last_activity_time = utime.ticks_ms()  
                     
                     if current_dial_number == secret_combo[current_stage]:
                         tone(1200, 100)

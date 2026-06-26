@@ -16,15 +16,17 @@ WIFI_PASSWORD = "Your_WiFi_Password"
 i2c0 = I2C(0, sda=Pin(0), scl=Pin(1), freq=400000)
 i2c1 = I2C(1, sda=Pin(2), scl=Pin(3), freq=400000)
 
+# 128x64 Displays for Core Tumblers
 disp_left   = ssd1306.SSD1306_I2C(128, 64, i2c0, addr=0x3C)
 disp_center = ssd1306.SSD1306_I2C(128, 64, i2c0, addr=0x3D)
 disp_right  = ssd1306.SSD1306_I2C(128, 64, i2c1, addr=0x3C)
+# 128x32 Display for Proximity Sensor
 disp_gauge  = ssd1306.SSD1306_I2C(128, 32, i2c1, addr=0x3D)
 
 servo = PWM(Pin(15))
 servo.freq(50)
 
-# Audio & Stethoscope Detection Pins
+# Audio & Headphone Detection Pins
 buzzer = Pin(14, Pin.OUT)
 hp_audio = Pin(13, Pin.OUT)
 hp_detect = Pin(12, Pin.IN, Pin.PULL_UP)
@@ -36,7 +38,6 @@ pin_sw = Pin(18, Pin.IN, Pin.PULL_UP)
 
 # --- Game State Settings ---
 game_mode = 0  # 0 = Menu Selection, 1 = Active Cracking, 2 = Victory Unlock
-
 DIFFICULTIES = ["EASY", "MED", "HARD"]
 menu_index = 0
 
@@ -50,6 +51,7 @@ selected_diff = "EASY"
 dial_max = 23
 proximity_range = 6
 secret_combo = [0, 0, 0]
+player_combo = [0, 0, 0]  # Tracks what the user actually submitted
 current_stage = 0  
 stage_locked_values = ["--", "--", "--"]
 
@@ -129,10 +131,7 @@ def set_servo_angle(angle):
     servo.duty_u16(duty)
 
 def tone(freq, duration_ms):
-    """Generates an audio tone, automatically switching targets if headphones are inserted."""
-    # If detection pin reads 1, headphones are present
     active_output = hp_audio if hp_detect.value() == 1 else buzzer
-    
     period = 1.0 / freq
     delay = period / 2.0
     cycles = int(freq * (duration_ms / 1000.0))
@@ -143,13 +142,37 @@ def tone(freq, duration_ms):
         utime.sleep(delay)
 
 def fast_click(us_duration):
-    """Generates low-latency microsecond clicks for dial turning feedback."""
     active_output = hp_audio if hp_detect.value() == 1 else buzzer
     active_output.value(1)
     utime.sleep_us(us_duration)
     active_output.value(0)
 
-# --- Hardware ISR Encoder Function ---
+def draw_huge_number(display, num_str, x_offset, y):
+    font_32 = {
+        '0': [0x3F, 0x61, 0x41, 0x41, 0x61, 0x3F],
+        '1': [0x00, 0x42, 0x7F, 0x40, 0x00, 0x00],
+        '2': [0x43, 0x61, 0x51, 0x49, 0x47, 0x41],
+        '3': [0x22, 0x41, 0x49, 0x49, 0x49, 0x36],
+        '4': [0x18, 0x14, 0x12, 0x7F, 0x10, 0x10],
+        '5': [0x27, 0x45, 0x45, 0x45, 0x4D, 0x31],
+        '6': [0x3E, 0x49, 0x49, 0x49, 0x49, 0x32],
+        '7': [0x01, 0x01, 0x71, 0x09, 0x05, 0x03],
+        '8': [0x36, 0x49, 0x49, 0x49, 0x49, 0x36],
+        '9': [0x26, 0x49, 0x49, 0x49, 0x49, 0x3E],
+        '-': [0x08, 0x08, 0x08, 0x08, 0x08, 0x08]
+    }
+    current_x = x_offset
+    for char in num_str:
+        if char in font_32:
+            matrix = font_32[char]
+            for col_idx, col_byte in enumerate(matrix):
+                for bit_idx in range(8):
+                    if col_byte & (1 << bit_idx):
+                        display.fill_rect(current_x + (col_idx * 2), y + (bit_idx * 4), 2, 4, 1)
+            current_x += 16
+        else:
+            current_x += 12
+
 def read_encoder(pin):
     global last_state_a, encoder_value, current_dial_number, last_dial_number, menu_index, last_activity_time
     
@@ -160,14 +183,12 @@ def read_encoder(pin):
         else: 
             step = -1  
             
-        # --- MODE 0: DIFFICULTY SELECTION MENU ---
         if game_mode == 0:
             menu_index += step
             if menu_index > 2: menu_index = 0
             elif menu_index < 0: menu_index = 2
             fast_click(150)
             
-        # --- MODE 1: ACTIVE CRACKING ENGINE ---
         elif game_mode == 1:
             last_activity_time = utime.ticks_ms()  
             last_dial_number = current_dial_number
@@ -183,27 +204,23 @@ def read_encoder(pin):
                     current_dial_number = target_number
                     fast_click(150)
                 elif selected_diff == "MED":
-                    fast_click(800) # Heavy friction thud
+                    fast_click(800) 
                 elif selected_diff == "HARD":
-                    current_dial_number = -99 # Flag reset for main loop
+                    current_dial_number = -99 
             else:
                 current_dial_number = target_number
                 if current_dial_number == secret_combo[current_stage]:
-                    fast_click(400) # Heavy lock snap
-                    utime.sleep_ms(12)  # Haptic sticky drag pause
+                    fast_click(400) 
+                    utime.sleep_ms(12)  
                 else:
-                    fast_click(150) # Light crisp click
+                    fast_click(150) 
 
         last_state_a = c_state_a
 
 pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=read_encoder)
 
-# --- Canvas Rendering Subroutines ---
 def update_menu_displays():
-    disp_left.fill(0)
-    disp_center.fill(0)
-    disp_right.fill(0)
-    disp_gauge.fill(0)
+    disp_left.fill(0); disp_center.fill(0); disp_right.fill(0); disp_gauge.fill(0)
     
     if menu_index == 0: disp_left.text("> TIER-1 <", 28, 28)
     else: disp_left.text("  TIER-1  ", 28, 28)
@@ -216,29 +233,28 @@ def update_menu_displays():
         
     disp_gauge.text(f"SYS_IP: {ip_address}", 8, 12)
     
-    disp_left.show()
-    disp_center.show()
-    disp_right.show()
-    disp_gauge.show()
+    disp_left.show(); disp_center.show(); disp_right.show(); disp_gauge.show()
+
+def render_individual_stage(display, stage_idx, header_text):
+    display.fill(0)
+    display.text(header_text, 36, 0)
+    
+    if current_stage == stage_idx:
+        dir_text = "TURN CCW <" if stage_idx == 1 else "TURN CW >"
+        display.text(dir_text, 24, 14)
+        val_str = f"{current_dial_number:02d}"
+        draw_huge_number(display, val_str, 48, 28)
+    else:
+        display.text("STATUS", 40, 16)
+        val_str = f"{stage_locked_values[stage_idx]:02d}" if stage_locked_values[stage_idx] != "--" else "--"
+        draw_huge_number(display, val_str, 48, 28)
+        
+    display.show()
 
 def update_game_displays():
-    disp_left.fill(0)
-    disp_left.text("CORE_01", 36, 0)
-    val = f"LN:{current_dial_number:02d}" if current_stage == 0 else f"LCK:{stage_locked_values[0]:02d}"
-    disp_left.text(val, 44, 28)
-    disp_left.show()
-    
-    disp_center.fill(0)
-    disp_center.text("CORE_02", 36, 0)
-    val = "STBY" if current_stage < 1 else (f"LN:{current_dial_number:02d}" if current_stage == 1 else f"LCK:{stage_locked_values[1]:02d}")
-    disp_center.text(val, 44, 28)
-    disp_center.show()
-    
-    disp_right.fill(0)
-    disp_right.text("CORE_03", 36, 0)
-    val = "STBY" if current_stage < 2 else (f"LN:{current_dial_number:02d}" if current_stage == 2 else "SECURE_OPN")
-    disp_right.text(val, 44, 28)
-    disp_right.show()
+    render_individual_stage(disp_left, 0, "CORE_01")
+    render_individual_stage(disp_center, 1, "CORE_02")
+    render_individual_stage(disp_right, 2, "CORE_03")
 
 def update_tumbler_sensor():
     global gauge_current_width, gauge_velocity
@@ -258,16 +274,46 @@ def update_tumbler_sensor():
 
     draw_width = max(0, min(104, int(gauge_current_width)))
     if draw_width > 2:
-        disp_gauge.rect(10, 16, 108, 12, 1)
-        disp_gauge.fill_rect(12, 18, draw_width, 8, 1)
+        disp_gauge.rect(10, 14, 108, 12, 1)
+        disp_gauge.fill_rect(12, 16, draw_width, 8, 1)
     else:
         disp_gauge.text("[ NO SIGNAL ]", 16, 16)
     disp_gauge.show()
 
+def handle_failure():
+    """Triggers visual flash error and dramatic alarm buzz on code mismatch."""
+    global game_mode, current_stage, encoder_value, current_dial_number, stage_locked_values, player_combo, gauge_current_width, gauge_velocity
+    
+    # Render static visual error message
+    disp_left.fill(0); disp_center.fill(0); disp_right.fill(0); disp_gauge.fill(0)
+    disp_left.text("CRACK", 44, 16); disp_left.text("FAILED", 40, 32)
+    disp_center.text("CRACK", 44, 16); disp_center.text("FAILED", 40, 32)
+    disp_right.text("CRACK", 44, 16); disp_right.text("FAILED", 40, 32)
+    disp_gauge.text("!! LOCKOUT !!", 16, 12)
+    
+    disp_left.show(); disp_center.show(); disp_right.show(); disp_gauge.show()
+    
+    # Heavy sounding descending failure warning tones
+    tone(220, 250)
+    utime.sleep_ms(80)
+    tone(147, 500)
+    
+    # Clear state variables entirely back to menu defaults
+    current_stage = 0
+    encoder_value = 0
+    current_dial_number = 0
+    stage_locked_values = ["--", "--", "--"]
+    player_combo = [0, 0, 0]
+    gauge_current_width = 0.0
+    gauge_velocity = 0.0
+    
+    utime.sleep_ms(2000) # Give them 2 full seconds to sit with their failure
+    game_mode = 0
+
 # --- Async Game Loop Engine ---
 async def game_loop():
     global game_mode, selected_diff, dial_max, proximity_range, secret_combo, current_stage
-    global encoder_value, current_dial_number, stage_locked_values, gauge_current_width, gauge_velocity, game_start_time, last_activity_time
+    global encoder_value, current_dial_number, stage_locked_values, gauge_current_width, gauge_velocity, game_start_time, last_activity_time, player_combo
     
     while True:
         if game_mode == 0:
@@ -281,6 +327,7 @@ async def game_loop():
                     proximity_range = difficulty_levels[selected_diff]["range"]
                     
                     secret_combo = [random.randint(0, dial_max) for _ in range(3)]
+                    player_combo = [0, 0, 0]
                     current_stage, encoder_value, current_dial_number = 0, 0, 0
                     stage_locked_values = ["--", "--", "--"]
                     gauge_current_width, gauge_velocity = 0.0, 0.0
@@ -295,7 +342,6 @@ async def game_loop():
                     while pin_sw.value() == 0: await asyncio.sleep_ms(10)
                 
         elif game_mode == 1:
-            # --- WATCHDOG: Inactivity Timeout Check ---
             if utime.ticks_diff(utime.ticks_ms(), last_activity_time) > IDLE_TIMEOUT_MS:
                 tone(600, 100)
                 tone(400, 100)
@@ -303,7 +349,6 @@ async def game_loop():
                 game_mode = 0
                 continue
 
-            # --- HARD MODE INTERRUPT: Wrong-Way Reset ---
             if current_dial_number == -99:
                 last_activity_time = utime.ticks_ms()  
                 tone(150, 500) 
@@ -311,36 +356,44 @@ async def game_loop():
                 encoder_value = 0
                 current_dial_number = 0
                 stage_locked_values = ["--", "--", "--"]
+                player_combo = [0, 0, 0]
                 gauge_current_width, gauge_velocity = 0.0, 0.0
                 continue
 
             update_game_displays()
             update_tumbler_sensor()
             
-            if current_stage == 1: disp_gauge.text("<- SPIN CCW", 8, 24)
-            else: disp_gauge.text("SPIN CW ->", 48, 24)
-            disp_gauge.show()
-            
             if pin_sw.value() == 0:
                 utime.sleep_ms(50)
                 if pin_sw.value() == 0:
                     last_activity_time = utime.ticks_ms()  
                     
-                    if current_dial_number == secret_combo[current_stage]:
-                        tone(1200, 100)
-                        stage_locked_values[current_stage] = current_dial_number
-                        current_stage += 1
-                        encoder_value, current_dial_number = 0, 0
-                        gauge_current_width, gauge_velocity = 0.0, 0.0
-                        if current_stage >= 3: game_mode = 2
-                    else:
-                        tone(220, 400) 
+                    # Capture user selection unconditionally
+                    player_combo[current_stage] = current_dial_number
+                    stage_locked_values[current_stage] = current_dial_number
+                    tone(1000, 80)  # Standard clean entry beep
+                    
+                    current_stage += 1
+                    encoder_value, current_dial_number = 0, 0
+                    gauge_current_width, gauge_velocity = 0.0, 0.0
+                    
+                    # If all 3 slots are populated, evaluate code entries
+                    if current_stage >= 3:
+                        if player_combo == secret_combo:
+                            game_mode = 2
+                        else:
+                            handle_failure()
+                            
                     while pin_sw.value() == 0: await asyncio.sleep_ms(10)
 
         elif game_mode == 2:
-            update_game_displays()
+            disp_left.fill(0); disp_center.fill(0); disp_right.fill(0)
+            disp_left.text("CORE", 44, 16); disp_left.text("UNLOCKED", 32, 32); disp_left.show()
+            disp_center.text("CORE", 44, 16); disp_center.text("UNLOCKED", 32, 32); disp_center.show()
+            disp_right.text("CORE", 44, 16); disp_right.text("UNLOCKED", 32, 32); disp_right.show()
+            
             disp_gauge.fill(0)
-            disp_gauge.text("LOCK UNLOCKED", 12, 16)
+            disp_gauge.text("ACCESS GRANTED", 12, 12)
             disp_gauge.show()
             
             final_elapsed_ms = utime.ticks_diff(utime.ticks_ms(), game_start_time)

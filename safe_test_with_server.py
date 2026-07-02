@@ -13,31 +13,46 @@ WIFI_SSID = "Your_WiFi_Name"
 WIFI_PASSWORD = "Your_WiFi_Password"
 
 # --- Hardware Initialization ---
-i2c0 = I2C(0, sda=Pin(0), scl=Pin(1), freq=400000)
-i2c1 = I2C(1, sda=Pin(2), scl=Pin(3), freq=400000)
+# Setup a single master I2C bus on pins 0 and 1
+i2c_bus = I2C(0, sda=Pin(0), scl=Pin(1), freq=400000)
+MUX_ADDR = 0x70
 
-# 128x64 Displays for Core Tumblers
-disp_left   = ssd1306.SSD1306_I2C(128, 64, i2c0, addr=0x3C)
-disp_center = ssd1306.SSD1306_I2C(128, 64, i2c0, addr=0x3D)
-disp_right  = ssd1306.SSD1306_I2C(128, 64, i2c1, addr=0x3C)
-# 128x32 Display for Proximity Sensor
-disp_gauge  = ssd1306.SSD1306_I2C(128, 32, i2c1, addr=0x3D)
+def select_mux_channel(channel):
+    """Writes to the TCA9548A control register to open a single channel (0-7)."""
+    if channel < 0 or channel > 7:
+        return
+    i2c_bus.writeto(MUX_ADDR, bytes([1 << channel]))
 
+# Initialize displays through the multiplexer switching layer
+# Note: They can all share the default 0x3C address safely now!
+select_mux_channel(0)
+disp_left = ssd1306.SSD1306_I2C(128, 64, i2c_bus, addr=0x3C)
+
+select_mux_channel(1)
+disp_center = ssd1306.SSD1306_I2C(128, 64, i2c_bus, addr=0x3C)
+
+select_mux_channel(2)
+disp_right = ssd1306.SSD1306_I2C(128, 64, i2c_bus, addr=0x3C)
+
+select_mux_channel(3)
+disp_gauge = ssd1306.SSD1306_I2C(128, 32, i2c_bus, addr=0x3C)
+
+# Servo Initialization
 servo = PWM(Pin(15))
 servo.freq(50)
 
-# Audio & Headphone Detection Pins
+# Audio Configuration
 buzzer = Pin(14, Pin.OUT)
 hp_audio = Pin(13, Pin.OUT)
 hp_detect = Pin(12, Pin.IN, Pin.PULL_UP)
 
-# Rotary Encoder (PEC11R-4220K-S0024)
+# Rotary Encoder Setup
 pin_a = Pin(16, Pin.IN, Pin.PULL_UP)
 pin_b = Pin(17, Pin.IN, Pin.PULL_UP)
 pin_sw = Pin(18, Pin.IN, Pin.PULL_UP)
 
 # --- Game State Settings ---
-game_mode = 0  # 0 = Menu Selection, 1 = Active Cracking, 2 = Victory Unlock
+game_mode = 0  
 DIFFICULTIES = ["EASY", "MED", "HARD"]
 menu_index = 0
 
@@ -51,7 +66,7 @@ selected_diff = "EASY"
 dial_max = 23
 proximity_range = 6
 secret_combo = [0, 0, 0]
-player_combo = [0, 0, 0]  # Tracks what the user actually submitted
+player_combo = [0, 0, 0]  
 current_stage = 0  
 stage_locked_values = ["--", "--", "--"]
 
@@ -60,7 +75,7 @@ last_state_a = pin_a.value()
 current_dial_number = 0
 last_dial_number = 0
 
-# --- Timer, Inactivity Watchdog, & Leaderboard ---
+# --- Watchdog, Network, & Leaderboard ---
 game_start_time = 0
 last_activity_time = 0
 IDLE_TIMEOUT_MS = 60000  
@@ -74,15 +89,16 @@ gauge_velocity = 0.0
 SPRING_K = 0.25      
 DAMPING = 0.65       
 
-# --- Web Server Instance Setup ---
+# --- Web Server Setup ---
 app = Microdot()
 
 @app.route('/')
 async def index(request):
     sorted_scores = sorted(leaderboard_data, key=lambda x: (x['diff'], x['time']))
-    rows_html = ""
-    for idx, score in enumerate(sorted_scores, 1):
-        rows_html += f"<tr><td>{idx}</td><td>{score['player']}</td><td class=\"diff-{score['diff']}\">{score['diff']}</td><td>{score['time']}</td></tr>"
+    rows_html = "".join([
+        f"<tr><td>{i}</td><td>{s['player']}</td><td class=\"diff-{s['diff']}\">{s['diff']}</td><td>{s['time']}</td></tr>"
+        for i, s in enumerate(sorted_scores, 1)
+    ])
 
     html = f"""<!DOCTYPE html>
     <html>
@@ -149,16 +165,11 @@ def fast_click(us_duration):
 
 def draw_huge_number(display, num_str, x_offset, y):
     font_32 = {
-        '0': [0x3F, 0x61, 0x41, 0x41, 0x61, 0x3F],
-        '1': [0x00, 0x42, 0x7F, 0x40, 0x00, 0x00],
-        '2': [0x43, 0x61, 0x51, 0x49, 0x47, 0x41],
-        '3': [0x22, 0x41, 0x49, 0x49, 0x49, 0x36],
-        '4': [0x18, 0x14, 0x12, 0x7F, 0x10, 0x10],
-        '5': [0x27, 0x45, 0x45, 0x45, 0x4D, 0x31],
-        '6': [0x3E, 0x49, 0x49, 0x49, 0x49, 0x32],
-        '7': [0x01, 0x01, 0x71, 0x09, 0x05, 0x03],
-        '8': [0x36, 0x49, 0x49, 0x49, 0x49, 0x36],
-        '9': [0x26, 0x49, 0x49, 0x49, 0x49, 0x3E],
+        '0': [0x3F, 0x61, 0x41, 0x41, 0x61, 0x3F], '1': [0x00, 0x42, 0x7F, 0x40, 0x00, 0x00],
+        '2': [0x43, 0x61, 0x51, 0x49, 0x47, 0x41], '3': [0x22, 0x41, 0x49, 0x49, 0x49, 0x36],
+        '4': [0x18, 0x14, 0x12, 0x7F, 0x10, 0x10], '5': [0x27, 0x45, 0x45, 0x45, 0x4D, 0x31],
+        '6': [0x3E, 0x49, 0x49, 0x49, 0x49, 0x32], '7': [0x01, 0x01, 0x71, 0x09, 0x05, 0x03],
+        '8': [0x36, 0x49, 0x49, 0x49, 0x49, 0x36], '9': [0x26, 0x49, 0x49, 0x49, 0x49, 0x3E],
         '-': [0x08, 0x08, 0x08, 0x08, 0x08, 0x08]
     }
     current_x = x_offset
@@ -178,10 +189,7 @@ def read_encoder(pin):
     
     c_state_a = pin_a.value()
     if c_state_a != last_state_a:
-        if pin_b.value() != c_state_a: 
-            step = 1   
-        else: 
-            step = -1  
+        step = 1 if pin_b.value() != c_state_a else -1
             
         if game_mode == 0:
             menu_index += step
@@ -220,22 +228,28 @@ def read_encoder(pin):
 pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=read_encoder)
 
 def update_menu_displays():
-    disp_left.fill(0); disp_center.fill(0); disp_right.fill(0); disp_gauge.fill(0)
-    
+    # Use MUX targeting when wiping and updating screens
+    select_mux_channel(0); disp_left.fill(0)
     if menu_index == 0: disp_left.text("> TIER-1 <", 28, 28)
     else: disp_left.text("  TIER-1  ", 28, 28)
+    disp_left.show()
         
+    select_mux_channel(1); disp_center.fill(0)
     if menu_index == 1: disp_center.text("> TIER-2 <", 32, 28)
     else: disp_center.text("  TIER-2  ", 32, 28)
+    disp_center.show()
         
+    select_mux_channel(2); disp_right.fill(0)
     if menu_index == 2: disp_right.text("> TIER-3 <", 28, 28)
     else: disp_right.text("  TIER-3  ", 28, 28)
+    disp_right.show()
         
+    select_mux_channel(3); disp_gauge.fill(0)
     disp_gauge.text(f"SYS_IP: {ip_address}", 8, 12)
-    
-    disp_left.show(); disp_center.show(); disp_right.show(); disp_gauge.show()
+    disp_gauge.show()
 
-def render_individual_stage(display, stage_idx, header_text):
+def render_individual_stage(display, channel_idx, stage_idx, header_text):
+    select_mux_channel(channel_idx)
     display.fill(0)
     display.text(header_text, 36, 0)
     
@@ -252,12 +266,13 @@ def render_individual_stage(display, stage_idx, header_text):
     display.show()
 
 def update_game_displays():
-    render_individual_stage(disp_left, 0, "CORE_01")
-    render_individual_stage(disp_center, 1, "CORE_02")
-    render_individual_stage(disp_right, 2, "CORE_03")
+    render_individual_stage(disp_left, 0, 0, "CORE_01")
+    render_individual_stage(disp_center, 1, 1, "CORE_02")
+    render_individual_stage(disp_right, 2, 2, "CORE_03")
 
 def update_tumbler_sensor():
     global gauge_current_width, gauge_velocity
+    select_mux_channel(3)
     disp_gauge.fill(0)
     disp_gauge.text("TUMBLER SENSOR", 8, 0)
     
@@ -281,24 +296,18 @@ def update_tumbler_sensor():
     disp_gauge.show()
 
 def handle_failure():
-    """Triggers visual flash error and dramatic alarm buzz on code mismatch."""
     global game_mode, current_stage, encoder_value, current_dial_number, stage_locked_values, player_combo, gauge_current_width, gauge_velocity
     
-    # Render static visual error message
-    disp_left.fill(0); disp_center.fill(0); disp_right.fill(0); disp_gauge.fill(0)
-    disp_left.text("CRACK", 44, 16); disp_left.text("FAILED", 40, 32)
-    disp_center.text("CRACK", 44, 16); disp_center.text("FAILED", 40, 32)
-    disp_right.text("CRACK", 44, 16); disp_right.text("FAILED", 40, 32)
-    disp_gauge.text("!! LOCKOUT !!", 16, 12)
+    # Broadcast failure frame across the multiplexer channels
+    select_mux_channel(0); disp_left.fill(0); disp_left.text("CRACK", 44, 16); disp_left.text("FAILED", 40, 32); disp_left.show()
+    select_mux_channel(1); disp_center.fill(0); disp_center.text("CRACK", 44, 16); disp_center.text("FAILED", 40, 32); disp_center.show()
+    select_mux_channel(2); disp_right.fill(0); disp_right.text("CRACK", 44, 16); disp_right.text("FAILED", 40, 32); disp_right.show()
+    select_mux_channel(3); disp_gauge.fill(0); disp_gauge.text("!! LOCKOUT !!", 16, 12); disp_gauge.show()
     
-    disp_left.show(); disp_center.show(); disp_right.show(); disp_gauge.show()
-    
-    # Heavy sounding descending failure warning tones
     tone(220, 250)
     utime.sleep_ms(80)
     tone(147, 500)
     
-    # Clear state variables entirely back to menu defaults
     current_stage = 0
     encoder_value = 0
     current_dial_number = 0
@@ -307,7 +316,7 @@ def handle_failure():
     gauge_current_width = 0.0
     gauge_velocity = 0.0
     
-    utime.sleep_ms(2000) # Give them 2 full seconds to sit with their failure
+    utime.sleep_ms(2000)
     game_mode = 0
 
 # --- Async Game Loop Engine ---
@@ -368,16 +377,14 @@ async def game_loop():
                 if pin_sw.value() == 0:
                     last_activity_time = utime.ticks_ms()  
                     
-                    # Capture user selection unconditionally
                     player_combo[current_stage] = current_dial_number
                     stage_locked_values[current_stage] = current_dial_number
-                    tone(1000, 80)  # Standard clean entry beep
+                    tone(1000, 80)
                     
                     current_stage += 1
                     encoder_value, current_dial_number = 0, 0
                     gauge_current_width, gauge_velocity = 0.0, 0.0
                     
-                    # If all 3 slots are populated, evaluate code entries
                     if current_stage >= 3:
                         if player_combo == secret_combo:
                             game_mode = 2
@@ -387,14 +394,10 @@ async def game_loop():
                     while pin_sw.value() == 0: await asyncio.sleep_ms(10)
 
         elif game_mode == 2:
-            disp_left.fill(0); disp_center.fill(0); disp_right.fill(0)
-            disp_left.text("CORE", 44, 16); disp_left.text("UNLOCKED", 32, 32); disp_left.show()
-            disp_center.text("CORE", 44, 16); disp_center.text("UNLOCKED", 32, 32); disp_center.show()
-            disp_right.text("CORE", 44, 16); disp_right.text("UNLOCKED", 32, 32); disp_right.show()
-            
-            disp_gauge.fill(0)
-            disp_gauge.text("ACCESS GRANTED", 12, 12)
-            disp_gauge.show()
+            select_mux_channel(0); disp_left.fill(0); disp_left.text("CORE", 44, 16); disp_left.text("UNLOCKED", 32, 32); disp_left.show()
+            select_mux_channel(1); disp_center.fill(0); disp_center.text("CORE", 44, 16); disp_center.text("UNLOCKED", 32, 32); disp_center.show()
+            select_mux_channel(2); disp_right.fill(0); disp_right.text("CORE", 44, 16); disp_right.text("UNLOCKED", 32, 32); disp_right.show()
+            select_mux_channel(3); disp_gauge.fill(0); disp_gauge.text("ACCESS GRANTED", 12, 12); disp_gauge.show()
             
             final_elapsed_ms = utime.ticks_diff(utime.ticks_ms(), game_start_time)
             time_str = f"{(final_elapsed_ms // 60000):02d}:{(final_elapsed_ms // 1000 % 60):02d}"
